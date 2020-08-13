@@ -1,5 +1,6 @@
 # Solomon islands dimension construction script
 
+# TODO: Midpoint imputation of indicator scores
 # Load packages
 library(tidyverse)
 library(car)
@@ -13,8 +14,8 @@ library(car)
 
 deprive <- function (raw_score){
   raw_score <- raw_score * 4
-  cats_score <- cut(raw_score ,breaks=c(0,1.001,2.001,3.001,4.001),
-           labels=factor(c("Most deprived","Deprived","Somewhat deprived","Least deprived")),right = FALSE)
+  cats_score <- cut(raw_score ,breaks=c(-0.001,1.001,2.001,3.001,4.001),
+           labels=factor(c("Most deprived","Deprived","Somewhat deprived","Least deprived")), ordered = TRUE)
   return(cats_score)}
 
 ## norm_IDM
@@ -28,6 +29,25 @@ norm_IDM <- function(score, min, max) {
   rescale <- ((score-min)/(max - min))
   return(rescale)
 }
+
+
+## Row means with midpoint imputation
+rowMeans_mid <- function(x) {
+  # Set where valid
+  valid_rows <- rowSums(!is.na(x))
+  invalid_rows <- valid_rows == 0
+  
+  x[is.na(x)] <- 0.5
+  
+  # Calc means
+  results <- x %>%
+    rowMeans()
+  
+  results[invalid_rows] <- NA
+  
+  results
+}
+
 
 ## Test dimension construction
 dim_test <- function(x) {
@@ -51,7 +71,7 @@ all_test <- function(data = data.ellipse()) {
 # Read in data
 
 setwd("/Users/patrickrehill/Documents/IWDA Consultancy 2/data/Dimension construction")
-data <- read.csv('SI_Dwell_HH_Ind_renamed_20200520.csv')
+data <- read.csv('/Users/patrickrehill/Documents/IWDA Consultancy 2/data/my_final_data.csv')
 
 # Incorporate other scripts
 
@@ -67,6 +87,57 @@ data$totaldisab1 <- data$see1 + data$hear1 + data$walk1 + data$memory1 + data$se
 data$disab1_bin <- ifelse(data$totaldisab1==0,0,1)
 data$Disabled_ind <- factor(data$disab1_bin, levels = c(0,1),
                             labels = c("Without disabilities", "With disabilities"))
+
+## Code provinces
+
+data$Province_ind <- car::recode(data$Province_ind, "1 = 'Central'; 2 = 'Guadalcanal'")
+
+## Age brackets
+
+data$Age_bracket_ind <- cut(data$Age_ind, breaks = c(18, 24, 34, 44, 54, 64, 74, 84, 150),
+                            ordered_result = TRUE, labels = c('18-24', '25-34', '35-44', 
+                                                              '45-54', '55-64', '65-74', '75-84', 
+                                                              '85+'))
+
+data$Age_bracket_big_ind <- cut(data$Age_ind, breaks = c(18, 35, 65, 150),
+                                ordered_result = TRUE, labels = c('18-34', '35-64', '65+'))
+
+# TODO: Get approval for this X
+## Remove single character responses that somehow got in there
+check_num_char <- function (x, tolerance = 4) {
+  # Check if it's already not character, return unaltered
+  if (class(x) != "character") return(x)
+  
+  # If the number of non-numeric strings is above tolerance, return unaltered
+  if ((sum(is.na(as.numeric(x))) - sum(is.na(x))) > tolerance) return(x)
+  
+  # Else delete non-numerics and convert to integer
+  return(as.numeric(x))
+}
+
+data <- map_df(data, check_num_char)
+
+# TODO: Get approval for this X
+## Fill in other responses with midpoints
+### Apologies for the loop but map functions were getting complicated
+for (i in 1:ncol(data)) {
+  # Find hypothetical "other" name
+  other_name <- paste0(names(data)[i], '_other')
+  # Check if there is a corresponding '_other' column for each column
+  if ((other_name %in% names(data)) & any(is.na(data[i]))) {
+    # Determine whether to enter refused to answer or number based on data type
+    if (is.numeric(pull(data[i]))) {
+        replacement <- 97
+      } else if (is.character(pull(data[i]))) {
+        replacement <- 'Refused to answer'
+      } else next
+    
+    # Select where NA and other is not NA
+    data[is.na(data[i]) & !is.na(data[other_name]),
+         i] <- replacement
+  }
+}
+
 
 # Dimensions
 
@@ -104,8 +175,9 @@ for (i in 1: nrow(food_vars)) {
 }
 
 #### Set indicator score
+data$food_raw_score <- car::recode(data$food_raw_score, "0 = 4; 1:3 = 3; 4:6 = 2; 7:8 = 1")
 
-data$score1.1.1 <- norm_IDM(data$food_raw_score, 0,8)
+data$score1.1.1 <- norm_IDM(data$food_raw_score, 1,4)
 
 ### Set theme and dimension scores
 
@@ -123,12 +195,14 @@ data$DepCat01 <- deprive(data$score1)
 ##### We can find this indicator by summing the component variables
 ##### First we need to recode drinking water source
 
+# TODO: Add other coding and confirm
+
 data$Water_drinking.source_recoded <- car::recode(
   data$Water_drinking.source,
   "'Treated water piped to dwelling' = 5;
-  'Treated piped yard, neighbour, or public tap'	=	4;
-  'Untreated water piped to dwelling'	=	3;
-  'Untreated piped yard/neighbour/ public tap'	=	2;
+  'Treated water piped to yard, neighbour, or public tap' = 4;
+  'Untreated water piped to dwelling' = 3;
+  'Untreated piped yard/neighbour/ public tap' = 2;
   'Borehole/Tube well'	=	2;
   'Dug well (protected)' =	2;
   'Spring (protected)' =	2;
@@ -143,6 +217,7 @@ data$Water_drinking.source_recoded <- car::recode(
   'Refused to answer' = 2.5;
   'Untreated water piped to yard, neighbour, or public tap' = 2;
   'Borehole/Tube well 6 Dug well (protected)' = 2;
+  'Other (please specify)' = 2.5;
   else = NA"
 )
 
@@ -189,6 +264,7 @@ data$Water_domestic.source_recoded <- car::recode(
   'Surface water' = 1;
   'Refused to answer' = 2.5;
   'Untreated water piped to yard, neighbour, or public tap' = 2;
+  'Other (please specify)' = 2.5;
   else = NA;
   NA = NA"
 )
@@ -254,7 +330,7 @@ data$score2.3.1 <- norm_IDM(data$Water_collection, 1, 3)
 data$score2.3 <- data$score2.3.1
 
 ### Dimension score
-data$score2 <- rowMeans(data[,c('score2.1', 'score2.2', 'score2.3')])
+data$score2 <- rowMeans_mid(data[,c('score2.1', 'score2.2', 'score2.3')])
 data$DepCat02 <- deprive(data$score2)
 
 
@@ -265,27 +341,30 @@ data$DepCat02 <- deprive(data$score2)
 ### Theme 1 - Habitability
 
 #### Indicator 1 - Floor material
-
+# TODO: Approve NA in material and other as midpoint
 data$Shelter_habitability_floor <- car::recode(data$Shelter_habitability_floor.material, 
-                                               "1:2 = 1; 3:4 = 2; 5:9 = 3; else = NA")
+                                               "1:2 = 1; 3:4 = 2; 5:9 = 3; else = 2")
 
 ##### Indicator score
 data$score3.1.1 <- norm_IDM(data$Shelter_habitability_floor, 1, 3)
 
 
 #### Indicator 2 - Roof material
+# TODO: Approve NA in material and other as midpoint
 
 data$Shelter_habitability_roof <- car::recode(data$Shelter_habitability_roof.material, 
-                                               "1=1;2:3 = 2; 4:7 = 3; 8:14 = 4; else = NA")
+                                               "1=1;2:3 = 2; 4:7 = 3; 8:14 = 4; else = 2")
 
 ##### Indicator score
 data$score3.1.2 <- norm_IDM(data$Shelter_habitability_roof, 1, 4)
 
 
 #### Indicator 3 - Exterior Wall material
+# TODO: Approve NA in material and other as midpoint
+
 
 data$Shelter_habitability_walls <- car::recode(data$Shelter_habitability_walls.material, 
-                                               "1=1;c(2,3,15)=2; 4:9=3; 17=3;10:14 = 4; 16=4; else = NA")
+                                               "1=1;c(2,3,15)=2; 4:9=3; 17=3;10:14 = 4; 16=4; else = 2")
 
 ##### Indicator score
 data$score3.1.3 <- norm_IDM(data$Shelter_habitability_walls, 1, 4)
@@ -321,7 +400,7 @@ data$score3.1.5 <- norm_IDM(data$Shelter_habitability_crowded, 1, 2)
 
 #### Calculate theme score
 
-data$score3.1 <- rowMeans(data[,c('score3.1.1', 'score3.1.2', 'score3.1.3', 'score3.1.4', 'score3.1.5')])
+data$score3.1 <- rowMeans_mid(data[,c('score3.1.1', 'score3.1.2', 'score3.1.3', 'score3.1.4', 'score3.1.5')])
 
 ### Theme 2 - Ownership of essential household items
 #### Indicator 1 - Ownership of essential household items
@@ -362,19 +441,19 @@ data$Shelter_security_worry.worried_recoded  <- car::recode(
 data$score3.3.1 <- norm_IDM(data$Shelter_security_worry.worried_recoded, 1, 2)
 
 #### Indicator 2 - Recognition of ownership
-data[data$Assets_dwelling.1 == 2 & !is.na(data$Assets_dwelling.1), 
+data[data$Assets_dwelling == 2 & !is.na(data$Assets_dwelling), 
      'Shelter_security_recognition'] <- 2
-data[data$Assets_dwelling.1 == 1 & data$Assets_dwelling.recognised == 1 &
-     !is.na(data$Assets_dwelling.1) & !is.na(data$Assets_dwelling.recognised),
+data[data$Assets_dwelling == 1 & data$Assets_dwelling.recognised == 1 &
+     !is.na(data$Assets_dwelling) & !is.na(data$Assets_dwelling.recognised),
   'Shelter_security_recognition'] <- 2
-data[data$Assets_dwelling.1 == 1 & data$Assets_dwelling.recognised == 2 &
-       !is.na(data$Assets_dwelling.1) & !is.na(data$Assets_dwelling.recognised),
+data[data$Assets_dwelling == 1 & data$Assets_dwelling.recognised == 2 &
+       !is.na(data$Assets_dwelling) & !is.na(data$Assets_dwelling.recognised),
      'Shelter_security_recognition'] <- 1
-data[data$Assets_dwelling.1 == 1 & data$Assets_dwelling.recognised == 94 &
-       !is.na(data$Assets_dwelling.1) & !is.na(data$Assets_dwelling.recognised),
+data[data$Assets_dwelling == 1 & data$Assets_dwelling.recognised == 94 &
+       !is.na(data$Assets_dwelling) & !is.na(data$Assets_dwelling.recognised),
      'Shelter_security_recognition'] <- 1
-data[(data$Assets_dwelling.1 == 97 | data$Assets_dwelling.recognised == 97) &
-       !is.na(data$Assets_dwelling.1) & !is.na(data$Assets_dwelling.recognised),
+data[(data$Assets_dwelling == 97 | data$Assets_dwelling.recognised == 97) &
+       !is.na(data$Assets_dwelling) & !is.na(data$Assets_dwelling.recognised),
      'Shelter_security_recognition'] <- 1.5
 
 data$score3.3.2 <- norm_IDM(data$Shelter_security_recognition, 1, 2)
@@ -407,10 +486,10 @@ data$score3.3.3 <- norm_IDM(data$Shelter_security_stress, 1, 4)
 
 #### Theme score
 
-data$score3.3 <- rowMeans(data[,c('score3.3.1', 'score3.3.2', 'score3.3.3')])
+data$score3.3 <- rowMeans_mid(data[,c('score3.3.1', 'score3.3.2', 'score3.3.3')])
 
 ### Dimension score
-data$score3 <- rowMeans(data[,c('score3.1', 'score3.2', 'score3.3')])
+data$score3 <- rowMeans_mid(data[,c('score3.1', 'score3.2', 'score3.3')])
 data$DepCat03 <- deprive(data$score3)
 
 
@@ -469,7 +548,7 @@ data$Health_status_mental <- data$Health_status_mental.anxiety_frequency +
 data$score4.1.2 <- norm_IDM(data$Health_status_mental, 2, 10)
 
 ##### Theme score
-data$score4.1 <- rowMeans(data[,c('score4.1.1', 'score4.1.2')])
+data$score4.1 <- rowMeans_mid(data[,c('score4.1.1', 'score4.1.2')])
 
 
 ### Theme 2 - Health care
@@ -477,6 +556,7 @@ data$score4.1 <- rowMeans(data[,c('score4.1.1', 'score4.1.2')])
 #### Indicator - General health care access and quality
 ##### Check if respondent didn't access healthcare
 data[,'Health_care_general'] <- NA
+data$Health_care_general <- as.numeric(data$Health_care_general)
 
 ##### If they did was it due to lack of need...
 data[(data$Health_care_general.accessed == 'No' &
@@ -507,8 +587,8 @@ health_care_problems <- data %>%
 health_care_problems_yes <- health_care_problems == 1
 health_care_problems_refused <- health_care_problems == 97
 
-data$Health_care_problems.points <- rowSums(health_care_problems_yes) +
-  (rowSums(health_care_problems_refused) / 2)
+data$Health_care_problems.points <- rowSums(health_care_problems_yes, na.rm = TRUE) +
+  (rowSums(health_care_problems_refused, na.rm = TRUE) / 2)
 
 ##### Sum together positive responses and half of refused answers
 data$Health_care_general[data$Health_care_general.accessed == 'Yes' &
@@ -530,57 +610,67 @@ data$score4.2.1 <- norm_IDM(data$Health_care_general, 1, 9)
 data[data$Gender_ind == 'Male' & !is.na(data$Gender_ind), 'Health_care_prenatal'] <- 9
 
 #### Set scores for those who aren't and haven't been in past 12 months
-data[data$Gender_ind == 2 & data$Health_care.pregnant_12_months == 2
-     & !is.na(data$Gender_ind) & is.na(data$Health_care.pregnant_12_months),
+data[data$Gender_ind == 'Female' & data$Health_care.pregnant_12_months == 2
+     & !is.na(data$Gender_ind) & !is.na(data$Health_care.pregnant_12_months),
      'Health_care_prenatal'] <- 9
 
 #### Set score for previous pregnancy
 ##### Refused to answer
-data[data$Health_care_prenatal_past.recieved == 97 &
-     !is.na(data$Health_care_prenatal_past.recieved),
-     'Health_care_prenatal'] <- 5
-
+data[data$Health_birth.location == 97 &
+       !is.na(data$Health_birth.location), 'Health_care_prenatal'] <- 5
 ##### Did not access prenatal care - couldn't access
 ##### Why is refused to answer here midpoint when every answer is high deprivation?
-data[data$Health_care_prenatal_past.recieved == 2 &
-     !is.na(data$Health_care_prenatal_past.recieved), 'Health_care_prenatal'] <- 1
+data[(data$Health_birth.location == 9 |
+       data$Health_birth.location == 10 |
+       data$Health_birth.location == 11) &
+       !is.na(data$Health_birth.location)
+       , 'Health_care_prenatal'] <- 1
 
 ##### If they went, check how many problems
-data$Health_care_prenatal_problems.respect <- car::recode(data$Health_care_general_problems.respect,
+birth_care_problems <- data %>%
+  dplyr::select(dplyr::contains('Health_birth_problems.'))
+
+##### Recode respect
+data$Health_birth_problems.respect <- car::recode(data$Health_birth_problems.respect,
                                                          "1 = 2; 2 = 1; 97 = 97; else = NA")
-prenatal_care_problems <- data %>%
-  dplyr::select(dplyr::contains('Health_care_prenatal_problems'))
 
-prenatal_care_problems_yes <- prenatal_care_problems == 1
-prenatal_care_problems_refused <- prenatal_care_problems == 97
+birth_care_problems_yes <- rowSums(birth_care_problems == 1 | 
+                                        birth_care_problems == 'Yes')
+birth_care_problems_refused <- rowSums(birth_care_problems == 97 |
+                                            birth_care_problems == 'Refused to answer')
 
-data$Health_care_prenatal_problems.points <- 9 - rowSums(prenatal_care_problems_yes) +
-  (rowSums(prenatal_care_problems_refused) / 2)
+##### Get problem points for everyone
+data$birth_problems <- 9 - (birth_care_problems_yes +
+  (0.5 * birth_care_problems_refused))
 
 ##### Sum together positive responses and half of refused answers
-data[data$Health_care_prenatal.accessed == 'Yes' &
-      !is.na(data$Health_care_prenatal.accessed),
-      'Health_care_prenatal'] <- 9 -
-  data$Health_care_prenatal_problems.points[data$Health_care_prenatal.accessed == 'Yes' &
-                                     !is.na(data$Health_care_prenatal.accessed)]
+data[!is.na(data$birth_problems),
+     'Health_care_prenatal'] <- data$birth_problems[!is.na(data$birth_problems)]
+
 #### Current pregnancy
 
 ##### Refused to answer
-data[data$Health_care_prenatal.recieved == 97, 'Health_care_prenatal'] <- 5
+data[data$Health_care_prenatal.received == 97 &
+       !is.na(data$Health_care_prenatal.received), 
+     'Health_care_prenatal'] <- 5
 ##### Did not access prenatal care - couldn't access
 ##### Why is refused to answer here midpoint when every answer is high deprivation?
-data[data$Health_care_prenatal.recieved == 2, 'Health_care_prenatal'] <- 1
+data[data$Health_care_prenatal.received == 2 &
+       !is.na(data$Health_care_prenatal.received),
+     'Health_care_prenatal'] <- 1
 
 ##### If they went, check how many problems
 prenatal_care_problems <- data %>%
   dplyr::select(dplyr::contains('Health_care_prenatal_problems.'))
 
-prenatal_care_problems_yes <- rowSums(prenatal_care_problems == 1)
-prenatal_care_problems_refused <- rowSums(prenatal_care_problems == 97)
+prenatal_care_problems_yes <- rowSums(prenatal_care_problems == 1 | 
+                                        prenatal_care_problems == 'Yes', na.rm = TRUE)
+prenatal_care_problems_refused <- rowSums(prenatal_care_problems == 97| 
+                                            prenatal_care_problems == 'Refused to answer', na.rm = TRUE)
 
 ##### Get problem points for everyone
-prenatal_problems <-9 - rowSums(prenatal_care_problems == 1) -
-  (0.5 * prenatal_care_problems_refused)
+prenatal_problems <-9 - (prenatal_care_problems_yes +
+  (0.5 * prenatal_care_problems_refused))
 
 ##### Sum together positive responses and half of refused answers
 data[!is.na(prenatal_problems),
@@ -590,11 +680,13 @@ data[!is.na(prenatal_problems),
 data$score4.2.2 <- norm_IDM(data$Health_care_prenatal, 2, 9)
 
 #### Construct theme
-data$score4.2 <- rowMeans(data[,c('score4.2.1', 'score4.2.2')])
+data$score4.2 <- rowMeans_mid(data[,c('score4.2.1', 'score4.2.2')])
 
 ### Construct dimension
-data$score4 <- rowMeans(data[,c('score4.1', 'score4.2')])
+data$score4 <- rowMeans_mid(data[,c('score4.1', 'score4.2')])
 data$DepCat04 <- deprive(data$score4)
+
+
 
 
 ## Dimension 5 - Education
@@ -609,7 +701,58 @@ data$score5.1.1 <- norm_IDM(data$Education_level, 1, 7)
 #### Construct theme score
 data$score5.1 <- data$score5.1.1
 
-# TODO: Add other indicators
+### Theme 2 - Functional literacy and numeracy
+education_marks <- read_csv('education_marks.csv') %>%
+  select(i1903_mark, i1904_mark, i1905_mark, Identifier) %>%
+  right_join(data, by = 'Identifier')
+
+##### Recode missings
+# Get approval to recode ambiguous marks to midpoint
+education_marks$i1903_mark_recoded <- car::recode(education_marks$i1903_mark, 
+                          "1 = 1; 2 = 2; 3 = 3; 4 = 4; 96 = 1; 97 = 2; 99 = 2; else = 2")
+
+education_marks$i1904_mark_recoded <- car::recode(education_marks$i1904_mark, 
+                                                "1 = 1; 2 = 2; else = 1.5")
+
+education_marks$i1905_mark_recoded <- car::recode(education_marks$i1905_mark, 
+                                                 "1 = 1; 2 = 2; else = 1.5")
+
+#### Indicator 1 - Literacy competency
+data$Education_litnum_literacy.writing <- education_marks$i1903_mark_recoded
+data$Education_litnum_literacy <- data %>%
+  select(Education_litnum_literacy.writing) %>%
+  mutate(Education_litnum_literacy.writing = as.numeric(Education_litnum_literacy.writing)) %>%
+  norm_IDM(1, 4)
+
+data$Education_litnum_literacy <- pull(data$Education_litnum_literacy)
+data$Education_litnum_literacy[data$Education_litnum_literacy > 1] <- NA
+
+data$score5.2.1 <- data$Education_litnum_literacy
+
+#### Indicator 2 - Numeracy
+data$Education_litnum_numeracy.add_subtract <- education_marks$i1904_mark_recoded
+data$Education_litnum_numeracy.multiply_divide <- education_marks$i1905_mark_recoded
+data$Education_litnum_numeracy <- data %>%
+  select(Education_litnum_numeracy.add_subtract, Education_litnum_numeracy.multiply_divide) %>%
+  mutate_all(as.numeric) %>%
+  transmute(numeracy = Education_litnum_numeracy.add_subtract + 
+              Education_litnum_numeracy.multiply_divide) %>%
+  norm_IDM(1, 4)
+
+data$Education_litnum_numeracy[data$Education_litnum_numeracy > 1] <- NA
+data$Education_litnum_numeracy <- pull(data$Education_litnum_numeracy)
+
+data$score5.2.2 <- data$Education_litnum_numeracy
+
+#### Create theme score
+data$score5.2 <- rowMeans_mid(data[,c('score5.2.1', 'score5.2.2')])
+
+### Create dimension score
+data$score5 <- rowMeans_mid(data[,c('score5.1', 'score5.2')])
+
+##### DepCat
+data$DepCat05 <- deprive(data$score5)
+
 
 
 
@@ -687,7 +830,7 @@ lighting_reliability <- car::recode(data$Energy_lighting.needs_met,
 data$Energy_lighting <- lighting_sources + lighting_reliability
 
 ##### Deal with cases where people don't cook or don't have energy sources
-data[data$Energy_lighting.source == 'We do not have energy for cooking, even if we need it' &
+data[data$Energy_lighting.source == 'There is no lighting in the household' &
        !is.na(data$Energy_lighting.source), 
                     'Energy_lighting'] <- 1
 
@@ -767,7 +910,7 @@ data$score6.4.1 <- norm_IDM(data$Energy_collection, 1, 3)
 data$score6.4 <- data$score6.4.1
 
 ### Dimension score
-data$score6 <- rowMeans(data[, c('score6.1', 'score6.2', 'score6.3', 'score6.4')])
+data$score6 <- rowMeans_mid(data[, c('score6.1', 'score6.2', 'score6.3', 'score6.4')])
 data$DepCat06 <- deprive(data$score6)
 
 
@@ -778,6 +921,7 @@ data$DepCat06 <- deprive(data$score6)
 #### Indicator - Toilet type
 ##### Initialise empty series
 data$Sanitation_toilet_type <- NA
+data$Sanitation_toilet_type <- as.numeric(data$Sanitation_toilet_type)
 
 ##### Recode toilet type to improved and unimproved scores
 toilet_type <- car::recode(data$Sanitation_toilet_type.type, "1 = 4; 2 = 4; 3 = 4; 4 = 2; 5 = 2;
@@ -795,6 +939,7 @@ data$score7.1.1 <- norm_IDM(data$Sanitation_toilet_type, 1, 5)
 # TODO: There is no refused to answer
 ##### Initialise with NA series
 data$Sanitation_toilet_ownership <- NA
+data$Sanitation_toilet_ownership <- as.numeric(data$Sanitation_toilet_ownership)
 
 ##### Set scores to 1 for those without toilets
 data[data$Sanitation_toilet_type.type == 12 &
@@ -821,7 +966,7 @@ data[data$Sanitation_toilet_ownership.shared == 1 &
 data$score7.1.2 <- norm_IDM(data$Sanitation_toilet_ownership, 1, 4)
 
 #### Theme score
-data$score7.1 <- rowMeans(data[,c('score7.1.1', 'score7.1.2')])
+data$score7.1 <- rowMeans_mid(data[,c('score7.1.1', 'score7.1.2')])
 
 
 ### Theme 2 - Washing facilities
@@ -836,8 +981,8 @@ data[data$Sanitation_washing_hands.place_to_wash == 97 &
      'Sanitation_washing_hands'] <- 2.5
 
 ##### Sufficient water
-# TODO: Coding guide doesn't mention sometimes response
-data[data$Sanitation_washing_hands.enough_water == 2 &
+# TODO: Coding guide doesn't mention sometimes response, treated as no X
+data[data$Sanitation_washing_hands.enough_water != 1 &
       !is.na(data$Sanitation_washing_hands.enough_water), 
      'Sanitation_washing_hands'] <- 2
 
@@ -846,7 +991,7 @@ data[data$Sanitation_washing_hands.enough_water == 97 &
      'Sanitation_washing_hands'] <- 2.5
 
 ##### Soap
-# TODO: Coding guide doesn't mention sometimes response
+# TODO: Coding guide doesn't mention sometimes response, add in here
 data[data$Sanitation_washing_hands.other_substances == 1 &
      !is.na(data$Sanitation_washing_hands.other_substances),
      'Sanitation_washing_hands'] <- 4
@@ -873,7 +1018,7 @@ data$Sanitation_washing_toiletries <- car::recode(data$Sanitation_washing_toilet
 data$score7.2.2 <- norm_IDM(data$Sanitation_washing_toiletries, 1, 4)
 
 #### Theme score
-data$score7.2 <- rowMeans(data[,c('score7.2.1', 'score7.2.2')])
+data$score7.2 <- rowMeans_mid(data[,c('score7.2.1', 'score7.2.2')])
 
 
 ### Theme 3 - Private changing place
@@ -910,7 +1055,7 @@ data$score7.3.1 <- norm_IDM(data$Sanitation_privatechanging, 1, 2)
 #### Theme score
 data$score7.3 <- data$score7.3.1
 ### Dimension score
-data$score7 <- rowMeans(data[,c('score7.1', 'score7.2', 'score7.3')])
+data$score7 <- rowMeans_mid(data[,c('score7.1', 'score7.2', 'score7.3')])
 data$DepCat07 <- deprive(data$score7)
 
 
@@ -920,7 +1065,7 @@ data$DepCat07 <- deprive(data$score7)
 ## Dimension 8 - Relationships
 ### Theme 1 - Dependence and support
 #### Indicator 1 - Dependence and support
-# TODO: Check why there are no nos in can't provide for self
+# TODO: Check why there are no nos in can't provide for self N
 ##### It's simpler to add together recoded scores rather than setting a score for every single outcome.
 data$Relationships_dependence_dependence.depend_on_others_recode <- car::recode(
   data$Relationships_dependence_dependence.depend_on_others,
@@ -981,6 +1126,7 @@ data$Relationships_participation_events.reason_not_contributed_recode <- car::re
                   "1 = 0; 2 = 0; 3 = 1; 4 = 0; 97 = 0; else = 0")
 
 data$Relationships_participation_events <- NA
+data$Relationships_participation_events <- as.numeric(data$Relationships_participation_events)
 
 ##### Set scores for any refused to answer
 event_participation_vars <- c('Relationships_participation_events.reason_not_contributed',
@@ -1089,11 +1235,11 @@ data[(rowSums(data[,c(events_menstruation_vars)] == 97) > 0) &
 data$score8.2.2 <- norm_IDM(data$Relationships_participation_menstruation, 1, 6)
 
 #### Set theme score
-data$score8.2 <- rowMeans(data[,c('score8.2.1', 'score8.2.2')])
+data$score8.2 <- rowMeans_mid(data[,c('score8.2.1', 'score8.2.2')])
 
 ### Set dimension score
-data$score8 <- rowMeans(data[,c('score8.1', 'score8.2')])
-data$DepCat08
+data$score8 <- rowMeans_mid(data[,c('score8.1', 'score8.2')])
+data$DepCat08 <- deprive(data$score8)
 
 
 
@@ -1103,6 +1249,7 @@ data$DepCat08
 #### Indicator - Basic footwear and clothing ownership
 ##### Initialise empty series
 data$Clothing_basic_ownership <- NA
+data$Clothing_basic_ownership <- as.numeric(data$Clothing_basic_ownership)
 
 ##### Own two sets of clothing and footwear
 data[data$Clothing_basic_ownership.2clothes == 1 &
@@ -1150,6 +1297,7 @@ data$score9.1.1 <- norm_IDM(data$Clothing_basic_ownership, 1, 4)
 #### Indicator 2 - Appropriate
 ##### Initialise empty series
 data$Clothing_basic_acceptability <- NA
+data$Clothing_basic_acceptability <- as.numeric(data$Clothing_basic_acceptability)
 
 ##### Both appropriate and protective
 data[data$Clothing_basic_acceptability.appropriate >= 2 &
@@ -1190,13 +1338,14 @@ data[rowSums(data[,c('Clothing_basic_acceptability.protective',
 data$score9.1.2 <- norm_IDM(data$Clothing_basic_acceptability, 1, 4)
 
 #### Calculate theme 1 score
-data$score9.1 <- rowMeans(data[,c('score9.1.1', 'score9.1.2')])
+data$score9.1 <- rowMeans_mid(data[,c('score9.1.1', 'score9.1.2')])
 
 
 ### Theme 2 - Other clothing and footwear
 #### Indicator - School and work clothing
 ##### Initialise series
 data$Clothing_other_formal <- NA
+data$Clothing_other_formal <- as.numeric(data$Clothing_other_formal)
 
 ##### We'll sum scores from these variables to make the indicator
 data$Clothing_other_schoolwork.sufficiency_recode <- car::recode(data$Clothing_other_schoolwork.sufficiency,
@@ -1251,7 +1400,7 @@ data$score9.2.2 <- norm_IDM(data$Clothing_other_formal, 1, 7)
 
 #### Calculate Theme 2 score
 
-data$score9.2 <- rowMeans(data[,c('score9.2.1', 'score9.2.2')])
+data$score9.2 <- rowMeans_mid(data[,c('score9.2.1', 'score9.2.2')])
 
 ### Theme 3 - Sanitary product use
 ##### Initialise empty series
@@ -1280,7 +1429,7 @@ data$score9.3.1 <- norm_IDM(data$Clothing_sanitaryproduct, 1, 4)
 data$score9.3 <- data$score9.3.1
 
 ### Calculate Dimension 9 score
-data$score9 <- rowMeans(data[,c('score9.1', 'score9.2', 'score9.3')])
+data$score9 <- rowMeans_mid(data[,c('score9.1', 'score9.2', 'score9.3')])
 
 ### Assign deprivation categories
 data$DepCat09 <- deprive(data$score9)
@@ -1297,20 +1446,29 @@ data$DepCat09 <- deprive(data$score9)
 
 ##### If using contraception
 ##### Traditional
-data[!is.na(data$FamPlan_contraception_contraception.own_traditional) &
-       data$FamPlan_contraception_contraception.own_traditional != 5,  
+# TODO: Approve removal of 5 (none of the above)
+# data[!is.na(data$FamPlan_contraception_contraception.own_traditional) &
+#        data$FamPlan_contraception_contraception.own_traditional != 5,  
+#      'FamPlan_contraception'] <- 4
+
+data[!is.na(data$FamPlan_contraception_contraception.own_traditional),
      'FamPlan_contraception'] <- 4
 
+
 ##### Modern
-data[!is.na(data$FamPlan_contraception_contraception.own_modern) &
-       data$FamPlan_contraception_contraception.own_modern != 13,  
+# TODO: Approve same change as above LOOKTO
+# data[!is.na(data$FamPlan_contraception_contraception.own_modern) &
+#        data$FamPlan_contraception_contraception.own_modern != 13,  
+#      'FamPlan_contraception'] <- 7
+
+data[!is.na(data$FamPlan_contraception_contraception.own_modern),
      'FamPlan_contraception'] <- 7
 
+# TODO: Check if this should be and or or
 ##### Refused
-data[(data$FamPlan_contraception_contraception.own_modern == 97 |
-      data$FamPlan_contraception_contraception.own_tradition == 97) &
-       !is.na(data$FamPlan_contraception_contraception.own_modern) &
-       !is.na(data$FamPlan_contraception_contraception.own_traditional),  
+data[(data$FamPlan_contraception_contraception.own_use == 97 &
+       !is.na(data$FamPlan_contraception_contraception.own_use)
+      ),  
      'FamPlan_contraception'] <- 4
 
 ##### Not using contraception
@@ -1404,6 +1562,18 @@ data[(data$FamPlan_contraception_contraception.own_use == 2 |
        !is.na(data$FamPlan_contraception_contraception.reason_not),
      'FamPlan_contraception'] <- 1
 
+##### Set reason as refused
+
+##### Set deprived answers
+data[(data$FamPlan_contraception_contraception.own_use == 2 |
+        data$FamPlan_contraception_contraception.own_use == 3) &
+       data$FamPlan_contraception_contraception.partner_use == 2 &
+       data$FamPlan_contraception_contraception.reason_not == 97  &
+       !is.na(data$FamPlan_contraception_contraception.own_use) &
+       !is.na(data$FamPlan_contraception_contraception.partner_use) &
+       !is.na(data$FamPlan_contraception_contraception.reason_not),
+     'FamPlan_contraception'] <- 1
+
 ##### Set refused to answer
 data[(data$FamPlan_contraception_contraception.own_use == 97 |
       data$FamPlan_contraception_contraception.partner_use == 97) &
@@ -1423,106 +1593,6 @@ data$DepCat11 <- deprive(data$score11)
 
 
 
-# #**********************************************************************************
-# #                Creating IDM dimension score 12 Environment for the SI data      #
-# # Date: 27/05/2020                                                                #
-# # Author: Carol McInerney                                                         #
-# #**********************************************************************************
-# library(dplyr)
-# install.packages("compositions")
-# library(compositions)
-# 
-# #**********************************************************************************
-# #      RECODE AND CLEAN UP RELEVANT VARIABLES
-# #**********************************************************************************
-# 
-# #recode all variables that start with Environment_hazards. so no is 0 and yes is 1 and refused to answer is 0.5 (for summing as they get midpoint)
-# recoded <- data %>%
-#   mutate_at(vars(starts_with("Environment_hazards.")), list(~recode(.,'No' = 0, 'Yes' = 1, 'Refused to answer' = 0.5))) %>%
-#   mutate_at(vars(Environment_resources_wild.gather), list(~recode(.,'No' = 0, 'Yes' = 1, 'Refused to answer' = 97))) %>%
-#   mutate_at(vars(Environment_resources_wild.available), list(~recode(.,'No' = 0, 'Yes' = 1, 'Refused to answer' = 97))) %>%
-#   mutate_at(vars(Energy_collection.responsible), list(~recode(.,'2' = 0, '1' = 1, '97' = 97))) %>%
-#   mutate_at(vars(Energy_collection.available), list(~recode(.,'No' = 0, 'Yes' = 1, 'Refused to answer' = 97))) %>%
-#   mutate_at(vars(starts_with("Environment_safe")), list(~recode(.,'Very safe' = 4, 'Safe' = 3, 'Unsafe' = 2, 'Very unsafe' = 1, 'Refused to answer' = 2.5)))
-# 
-# 
-# 
-# 
-# #initialise scoring variables
-# recoded[, paste0("score",
-#                  c("12.1.1","12.1",
-#                    "12.2.1", "12.2.2", "12.2",
-#                    "12.3.1", "12.3", "12", "12_cat"))] <- NA
-# 
-# scored <- within(recoded, {
-#   #--------------------------------------------------------
-#   ## D12T1 Environment/Environmental problems
-#   #--------------------------------------------------------
-#   # Theme 1 is 'Enviornmental problems' (D12T1), it has one indicator consisting of eight variables.
-# 
-#   env_probs <- Environment_hazards.rubbish +
-#     Environment_hazards.hazardous_waste +
-#     Environment_hazards.sewage +
-#     Environment_hazards.air_pollution +
-#     Environment_hazards.water_pollution +
-#     Environment_hazards.standing_water +
-#     Environment_hazards.noise  +
-#     Environment_hazards.other
-# 
-#   score12.1.1 <- 8 - ceiling(env_probs)
-# 
-# 
-#   #--------------------------------------------------------
-#   ## D12T2 Environment/Natural resource utilisation
-#   #--------------------------------------------------------
-#   # Theme 2 is 'Natural resource utilisation' (D12T2), and has two indicators. The first is constructed from two variables, and the second indicator is constructed from three variables
-#   score12.2.1[Environment_resources_wild.gather %in% 0] <- 3 #not responsible for collecting
-#   score12.2.1[(Environment_resources_wild.gather %in% 1 & Environment_resources_wild.available %in% 1)| #responsible and sufficient
-#                 Environment_resources_wild.gather %in% 97 ] <- 2 #did not answer if responsible
-#   score12.2.1[Environment_resources_wild.gather %in% 1 & Environment_resources_wild.available %in% 0] <- 1 #responsible and insufficient
-# 
-#   score12.2.2[Energy_collection.responsible %in% 0] <- 3 #not responsible for collecting
-#   score12.2.2[(Energy_collection.responsible %in% 1 & Energy_collection.available %in% 1)| #responsible and sufficient
-#                 Energy_collection.responsible %in% 97 ] <- 2 #did not answer if responsible
-#   score12.2.2[Energy_collection.responsible %in% 1 & Energy_collection.available %in% 0] <- 1 #responsible and insufficient
-# 
-#   #--------------------------------------------------------
-#   ## D12T3 Environment/Safe environment
-#   #--------------------------------------------------------
-#   # Theme 3 is 'Safe environment' (D12T3) and has one indicator created from two variables
-#   score12.3.1 <- Environment_safe.walking + Environment_safe.home_alone
-#   #
-#   score12.1.1 = score12.1.1*4/8
-#   score12.1 = score12.1.1
-#   score12.2.1 = (score12.2.1-1)*4/2
-#   score12.2.2 = (score12.2.2 - 1)*4/2
-#   score12.2.arith = rowMeans(cbind(score12.2.1, score12.2.2), na.rm = T)
-#   score12.3.1 <- (score12.3.1 - 2)*4/6
-#   score12.3 <- score12.3.1
-#   score12 = rowMeans(cbind(score12.1,score12.2.arith, score12.3), na.rm = T)
-#   # score12.2.geom = geometricmeanRow(cbind(score12.2.1, score12.2.2), na.rm = T)
-#   # score12.geom = geometricmeanRow(cbind(score12.1,score12.2.geom, score12.3), na.rm = T)
-# 
-# 
-#   #--------------------------------------------------------
-#   ## Aggregation
-#   #--------------------------------------------------------
-#   #add labels
-#   var_label(score12.1.1) <- "Exposure to environmental problems"
-#   var_label(score12.2.1) <- "Wild resource utilisation"
-#   var_label(score12.2.2) <- "Biomass fuel utilisation"
-#   var_label(score12.3.1) <- "Safe environment"
-#   var_label(score12.1) <- "Exposure to environmental problems"
-#   var_label(score12.2) <- "Wild resource utilisation"
-#   var_label(score12.3) <- "Safe environment"
-#   var_label(score12) <- "Environment"
-# 
-# 
-#   #create categorised variable
-#   data$DepCat12 <- deprive(score12)
-# 
-# 
-# })
 
 
 
@@ -1532,6 +1602,7 @@ data$DepCat11 <- deprive(data$score11)
 #### Indicator 1 - Voting
 ##### Initialise empty series
 data$Voice_public_voting <- NA
+data$Voice_public_voting <- as.numeric(data$Voice_public_voting)
 
 ##### Set scores for those who didn't vote or can't remember
 data[(data$Voice_public_voting.voted_last_election == 2 |
@@ -1641,7 +1712,7 @@ data$Voice_public_concerns <- data$Voice_public_concerns.difficulty_recode +
 data$score13.1.3 <- norm_IDM(data$Voice_public_concerns, 2, 7)
 
 #### Set theme score
-data$score13.1 <- rowMeans(data[,c('score13.1.1', 'score13.1.2', 'score13.1.3')])
+data$score13.1 <- rowMeans_mid(data[,c('score13.1.1', 'score13.1.2', 'score13.1.3')])
 
 
 ### Theme 2 - Personal control
@@ -1649,7 +1720,7 @@ data$score13.1 <- rowMeans(data[,c('score13.1.1', 'score13.1.2', 'score13.1.3')]
 ##### Count the number of yeses
 personal_control_vars <- data %>% select(starts_with('Voice_personal_personal.prevented')) %>%
   select(-Voice_personal_personal.prevented_interview_consent)
-data$Voice_personal_personal <- rowSums(personal_control_vars == 1, na.rm = TRUE)
+data$Voice_personal <- 6 - rowSums(personal_control_vars == 1, na.rm = TRUE)
 
 ##### Set refused to answer and other midpoints
 ##### Set scores for those who did not consent to participate in this section
@@ -1660,10 +1731,10 @@ data[data$Voice_personal_personal.prevented_interview_consent == 2 &
 ##### Those with any refused or interrupted
 data[rowSums(personal_control_vars >= 97, na.rm = TRUE) > 0 &
       !is.na(rowSums(personal_control_vars >= 97, na.rm = TRUE)),
-      'Voice_personal_personal'] <- 3
+      'Voice_personal'] <- 3
 
 ##### Set indicator scores
-data$score13.2.1 <- norm_IDM(data$Voice_personal_personal, 0, 6)
+data$score13.2.1 <- norm_IDM(data$Voice_personal, 0, 6)
 
 
 #### Indicator 2 - Household decision making
@@ -1677,100 +1748,273 @@ data$Voice_personal_decisionmaker <- data %>%
 data$score13.2.2 <- norm_IDM(data$Voice_personal_decisionmaker, 8 , 40)
 
 #### Set theme score
-data$score13.2 <- rowMeans(data[,c('score13.2.1', 'score13.2.2')])
+data$score13.2 <- rowMeans_mid(data[,c('score13.2.1', 'score13.2.2')])
 
 ### Set dimension score
-data$score13 <- rowMeans(data[,c('score13.1', 'score13.2')])
+data$score13 <- rowMeans_mid(data[,c('score13.1', 'score13.2')])
 data$DepCat13 <- deprive(data$score13)
 
 
 
+## Dimension 15 
 
-# #**********************************************************************************
-# #                Creating IDM dimension score 14 Time-use for the SI data         #
-# # Date: 27/05/2020                                                                #
-# # Author: Carol McInerney                                                         #
-# #**********************************************************************************
-# library(dplyr)
-# library(labelled)
+### Theme 1 - Paid work
+#### Indicator 1 - Employment status
+##### For people who have not been employed in the past month
+data$Work_paid_status <- car::recode(data$Work_paid_status.reason_not_worked,
+                                     "1 = 4; 2 = 3; 3 = 2; 4 = 2; 5 = 1; 6 = 2; 7 = 2; 8 = 4; 
+                                     9 = 2; 10 = 3; 11 = 4; 12 = 1; 13 = 1; 97 = 2.5; else = NA")
+# TODO: Get approval for farm change
+##### For people who have been in employment past week
+data[(data$Work_paid_status.past_week == 1 &
+        !is.na(data$Work_paid_status.past_week)) |
+      (data$Work_paid_status.farm == 'Yes' &
+        !is.na(data$Work_paid_status.farm)),
+     'Work_paid_status'] <- 4
+
+##### For people who have been in employment past month but not week
+data[data$Work_paid_status.past_week == 2 &
+     data$Work_paid_status.past_month == 1 &
+     !is.na(data$Work_paid_status.past_week) &
+     !is.na(data$Work_paid_status.past_month),
+     'Work_paid_status'] <- 3
+
+##### Indicator score
+data$score15.1.1 <- norm_IDM(data$Work_paid_status, 1, 4)
+
+
+# TODO: Figure out how to treat NAs in themes 2 and 3.
+#### Indicator 2 - Job security
+##### We can just sum variable scores for this
+##### Recode number of jobs
+data$Work_paid_security.number_jobs_recode <- car::recode(data$Work_paid_security.number_jobs,
+                                                          "2:3 = 3; 4:5 = 2; 6:11 = 1; 97 = 1.5;
+                                                          else = NA")
+
+##### Employers forcing a job change
+data$Work_paid_security.times_fired_recode <- car::recode(data$Work_paid_security.times_fired,
+                                                          "'Very often' = 1; 'Often' = 2; 
+                                                          'Not often' = 3; 'Never' = 4; 
+                                                          'Refused to answer' = 2.5; else = NA")
+
+##### Employment benefits
+data$Work_paid_security.benefits_recode <- car::recode(data$Work_paid_security.benefits,
+                                                          "1 = 2; 2 = 1; 97 = 1.5; else = NA")
+
+##### Indicator score
+data$Work_paid_security <- data$Work_paid_security.number_jobs_recode +
+  data$Work_paid_security.times_fired_recode +
+  data$Work_paid_security.benefits_recode
+
+data$score15.1.2 <- norm_IDM(data$Work_paid_security, 3, 9)
+
+
+#### Indicator 3 - Hazards
+##### Sum number of hazards then recode
+data$Work_paid_danger <- data %>%
+  select(Work_paid_danger.exposed, Work_paid_danger.injury, Work_paid_danger.space) %>%
+  transmute(dangers = 3 - rowSums(. == 'Yes'), refused = rowSums(. == 'Refused to answer')) %>%
+  transmute(ifelse(refused > 0, 1.5, dangers)) %>%
+  pull
+
+data$score15.1.3 <- norm_IDM(data$Work_paid_danger, 0, 3)
+
+
+#### Indicator 4 - Respect and autonomy
+##### Recode breaks allowed to be consistent
+data$Work_paid_respect.breaks_allowed_recode <- car::recode(data$Work_paid_respect.breaks_allowed,
+                                                            "'No' = 'Yes'; 'Yes' = 'No';
+                                                            'Refused to answer' = 'Refused to answer'")
+
+##### Sum number of issues and half number of refused to answers
+data$Work_paid_respect <- data %>%
+  select(Work_paid_respect.breaks_allowed_recode, Work_paid_respect.sexual_harrassment,
+         Work_paid_respect.physical_abuse, Work_paid_respect.humiliating) %>%
+  transmute(issues = rowSums(. == 'Yes'), refused = rowSums(. == 'Refused to answer')) %>%
+  transmute(4 - (issues + (refused/2))) %>%
+  pull
+
+data$score15.1.4 <- norm_IDM(data$Work_paid_respect, 0, 4)
+
+#### Theme score
+data$score15.1 <- rowMeans_mid(data[,c('score15.1.1', 'score15.1.2', 'score15.1.3', 'score15.1.4')])
+
+
+
+### Theme 2 - Unpaid work
+#### Indicator 1 - Hazards
+##### No injuries
+data[data$Work_unpaid_injury.injured_12months == 2 &
+     !is.na(data$Work_unpaid_injury.injured_12months),
+      'Work_unpaid_injury'] <- 3
+
+##### Refused to say
+data[data$Work_unpaid_injury.injured_12months == 97 &
+       !is.na(data$Work_unpaid_injury.injured_12months),
+     'Work_unpaid_injury'] <- 2
+
+##### If they had had an injury...
+##### Did it cause time off?
+##### No
+data[data$Work_unpaid_injury.temp_effect == 'No' &
+       !is.na(data$Work_unpaid_injury.temp_effect),
+     'Work_unpaid_injury'] <- 3
+
+##### Refused to answer
+data[data$Work_unpaid_injury.temp_effect == 'Refused to answer' &
+       !is.na(data$Work_unpaid_injury.temp_effect),
+     'Work_unpaid_injury'] <- 2
+
+##### If yes, was there a permanent effect?
+##### No
+data[data$Work_unpaid_injury.permanent_effect== 'No' &
+       !is.na(data$Work_unpaid_injury.permanent_effect),
+     'Work_unpaid_injury'] <- 2
+
+##### Yes
+data[data$Work_unpaid_injury.permanent_effect== 'Yes' &
+       !is.na(data$Work_unpaid_injury.permanent_effect),
+     'Work_unpaid_injury'] <- 1
+
+##### Refused
+data[data$Work_unpaid_injury.permanent_effect== 'Refused to answer' &
+       !is.na(data$Work_unpaid_injury.permanent_effect),
+     'Work_unpaid_injury'] <- 1.5
+
+
+##### Indicator score
+data$score15.2.1 <- norm_IDM(data$Work_unpaid_injury, 1, 3)
+
+
+#### Indicator 2 - Valuing unpaid work
+##### Here we can just sum recoded scores
+data$Work_unpaid_respect.valued_recode <- car::recode(data$Work_unpaid_respect.valued,
+                                                      "'Yes' = 1; 'No' = 0; 'Refused to answer' = 0.5")
+
+data$Work_unpaid_respect.humiliating_recode <- car::recode(data$Work_unpaid_respect.humiliating,
+                                                      "'Yes' = 0; 'No' = 1; 'Refused to answer' = 0.5")
+
+data$Work_unpaid_respect <- data$Work_unpaid_respect.valued_recode +
+  data$Work_unpaid_respect.humiliating_recode
+
+##### Form indicator score
+data$score15.2.2 <- norm_IDM(data$Work_unpaid_respect, 0, 2)
+
+#### Theme score
+data$score15.2 <- rowMeans_mid(data[,c('score15.2.1', 'score15.2.2')])
+
+# TODO: Get approval for this
+##### Set theme score to max if do not do unpaid
+data[data$Work_unpaid == 'No' &
+     !is.na(data$Work_unpaid),
+     'score15.2'] <- 1
+
+
+### Theme 3 - Double work burden
+#### Indicator 1 - Double work burden
+
+##### Read in recodes
+data1 <- read_csv('recoded_time.csv') %>%
+  map_df(as.numeric)
+
+names(data1) <- paste0(names(data1), '_num')
+
+data <- cbind(data, data1)
+
+##### Deal with NAs
+##### NAs put in in recoding
+##### Gender means
+mean_narm <- function (x) mean(as.numeric(x), na.rm = TRUE)
+impute_mean_group <- function (x) {
+  # ifelse(is.na(x),
+  #        return(mean_narm(x)),
+  #        return(x))
+  
+  replace(x, is.na(x), mean(x, na.rm=TRUE))
+}
+
+numtime <- data %>%
+  group_by(Gender_ind) %>%
+  select(Work_unpaid.days_per_wk_num, 
+         Work_unpaid.hrs_per_day_num, 
+         Work_paid.days_per_wk_num,
+         Work_paid.hrs_per_day_num) %>%
+  transmute_all(impute_mean_group) %>%
+  ungroup(Gender_ind) %>%
+  select(Work_unpaid.days_per_wk_num, 
+         Work_unpaid.hrs_per_day_num, 
+         Work_paid.days_per_wk_num,
+         Work_paid.hrs_per_day_num)
+
+##### Enumerator NAs
+originalNA <- data %>%
+  select(Work_unpaid.days_per_wk, 
+         Work_unpaid.hrs_per_day, 
+         Work_paid.days_per_wk,
+         Work_paid.hrs_per_day) %>%
+  is.na() %>%
+  as.tibble()
+
+##### Apply these
+numtime$Work_unpaid.days_per_wk_num[originalNA$Work_unpaid.days_per_wk] <- 0
+numtime$Work_paid.days_per_wk_num[originalNA$Work_paid.days_per_wk] <- 0
+numtime$Work_unpaid.hrs_per_day_num[originalNA$Work_unpaid.hrs_per_day] <- 0
+numtime$Work_paid.hrs_per_day_num[originalNA$Work_paid.hrs_per_day] <- 0
+
+
+
+##### Join
+
+##### Calculate
+# TODO: Figure out an imputation for 15.3
+# TODO: Themes
+data$Work_doubleburden <- numtime %>%
+  transmute((Work_paid.hrs_per_day_num * Work_paid.days_per_wk_num) +
+              (Work_unpaid.hrs_per_day_num * Work_unpaid.days_per_wk_num)) %>%
+  pull() %>%
+  cut(.,breaks = c(0,35.01, 55.01, 1000), labels = c(3, 2, 1)) %>%
+  as.character() %>%
+  as.numeric()
+
+##### Impute a midpoint
+# TODO: Impute
+
+##### Indicator score
+data$score15.3.1 <- norm_IDM(data$Work_doubleburden, 1, 3)
+
+#### Theme score
+data$score15.3 <- data$score15.3.1
+
+### Dimension score
+data$score15 <- rowMeans_mid(data[,c('score15.1', 'score15.2', 'score15.3')])
+
+## Add dims 12 and 14 ##
+
+data_new <- readRDS('~/Downloads/SI_scored12_14.rds') %>% 
+  select(contains('score'))
+
+data_new <- data_new / 4
+  
+data <- data_new %>%
+  cbind(data, .)
+
+data$DepCat12 <- deprive(data$score12)
+data$DepCat14 <- deprive(data$score14)
+data$DepCat15 <- deprive(data$score15)
+
+## Add one and multiply by 3 for 1 - 4 scale
+# convert_1_4 <- function (x) return ((x * 3) + 1)
 # 
+# cheryl_data <- data %>%
+#   select_at(vars(contains('DepCat'))) %>%
+#   map_df(~as.integer(.x))
 # 
-# #**********************************************************************************
-# #      DETERMINE QUARTILE CUT OFFS FOR DIFFERENT DEPRIVATION LEVELS
-# #**********************************************************************************
-# #calculate time burden for all respondents
-# # Time burden includes time spent on work for pay, profit and production, unpaid domestic
-# # and care activities, and also for other obligatory time commitments.
-# 
-# recoded <- scored %>%
-#   mutate(Timeuse_burden_total.burden.time =  rowSums(select(., starts_with("Timeuse_burden_activity.time_18.0"), ends_with(".time_18.11.Study")), na.rm = T)) %>%
-#   mutate_if(is.logical, as.character) %>%
-#   mutate_at(vars(starts_with("Timeuse_burden_activity.childcare")), list(~recode(.,'Yes' = 1, 'No' = 0, 'Refused to answer' = 0))) %>%
-#   mutate_at(vars(starts_with("Timeuse_burden_activity.othercare")), list(~recode(.,'Yes' = 1, 'No' = 0, 'Refused to answer' = 0))) %>%
-#   mutate(Timeuse_burden_oncall.time_18.01.PaidWork = ifelse(Timeuse_burden_activity.childcare_18.01.PaidWork == 1 | Timeuse_burden_activity.othercare_18.01.PaidWork == 1, Timeuse_burden_activity.time_18.01.PaidWork, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.02.GrowProduce = ifelse(Timeuse_burden_activity.childcare_18.02.GrowProduce == 1 | Timeuse_burden_activity.othercare_18.02.GrowProduce == 1, Timeuse_burden_activity.time_18.02.GrowProduce, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.03.CollectFuel = ifelse(Timeuse_burden_activity.childcare_18.03.CollectFuel == 1 | Timeuse_burden_activity.othercare_18.03.CollectFuel == 1, Timeuse_burden_activity.time_18.03.CollectFuel, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.04.CollectWater = ifelse(Timeuse_burden_activity.childcare_18.04.CollectWater == 1 | Timeuse_burden_activity.othercare_18.04.CollectWater == 1, Timeuse_burden_activity.time_18.04.CollectWater, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.05.UnpaidWork = ifelse(Timeuse_burden_activity.childcare_18.05.UnpaidWork == 1 | Timeuse_burden_activity.othercare_18.05.UnpaidWork == 1, Timeuse_burden_activity.time_18.05.UnpaidWork, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.06.Maintenance = ifelse(Timeuse_burden_activity.childcare_18.06.Maintenance == 1 | Timeuse_burden_activity.othercare_18.06.Maintenance == 1, Timeuse_burden_activity.time_18.06.Maintenance, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.07.Care = ifelse(Timeuse_burden_activity.childcare_18.07.Care == 1 | Timeuse_burden_activity.othercare_18.07.Care == 1, Timeuse_burden_activity.time_18.07.Care, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.08.Volunteer = ifelse(Timeuse_burden_activity.childcare_18.08.Volunteer == 1 | Timeuse_burden_activity.othercare_18.08.Volunteer == 1, Timeuse_burden_activity.time_18.08.Volunteer, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.09.Cultural = ifelse(Timeuse_burden_activity.childcare_18.09.Cultural == 1 | Timeuse_burden_activity.othercare_18.09.Cultural == 1, Timeuse_burden_activity.time_18.09.Cultural, 0)) %>%
-#   mutate(Timeuse_burden_oncall.time_18.11.Study = ifelse(Timeuse_burden_activity.childcare_18.11.Study == 1 | Timeuse_burden_activity.othercare_18.11.Study == 1, Timeuse_burden_activity.time_18.11.Study, 0)) %>%
-#   mutate(Timeuse_burden_total.oncall.time =  rowSums(select(., starts_with("Timeuse_burden_oncall.time_18.0")), na.rm = T)) %>%
-#   mutate(Timeuse_burden_prop.oncall.time =  Timeuse_burden_total.oncall.time/Timeuse_burden_total.burden.time)
-# 
-# 
-# summary(recoded$Timeuse_burden_total.burden.time)
-# plot(as.factor(recoded$Timeuse_burden_total.burden.time))
-# #quartiles for time burden are 7,10,13
-# plot(as.factor(recoded$Timeuse_burden_prop.oncall.time))
-# 
-# 
-# #initialise scoring variables
-# recoded[, paste0("score",
-#                  c("14.1.1","14.1", "14", "14_cat"))] <- NA
-# 
-# scored <- within(recoded, {
-#   #==============================================================
-#   ## D14 Time use
-#   #==============================================================
-#   # The time Use dimension has one theme and ine indicator, constructed from 12 variables
-# 
-#   #--------------------------------------------------------
-#   ## D14T1I1 Time use/Time burden and on-call time
-#   score14.1.1[Timeuse_burden_total.burden.time < 7 & Timeuse_burden_prop.oncall.time == 0] <- 13
-#   score14.1.1[Timeuse_burden_total.burden.time < 7 & Timeuse_burden_prop.oncall.time > 0 & Timeuse_burden_prop.oncall.time <= 1/3] <- 12
-#   score14.1.1[Timeuse_burden_total.burden.time < 7 & Timeuse_burden_prop.oncall.time > 1/3 & Timeuse_burden_prop.oncall.time <= 2/3] <- 11
-#   score14.1.1[Timeuse_burden_total.burden.time < 7 & Timeuse_burden_prop.oncall.time > 2/3 & Timeuse_burden_prop.oncall.time <= 1] <- 10
-# 
-#   score14.1.1[Timeuse_burden_total.burden.time >= 7 & Timeuse_burden_total.burden.time < 10 & Timeuse_burden_prop.oncall.time == 0] <- 10
-#   score14.1.1[Timeuse_burden_total.burden.time >= 7 & Timeuse_burden_total.burden.time < 10 & Timeuse_burden_prop.oncall.time > 0 & Timeuse_burden_prop.oncall.time <= 1/3] <- 9
-#   score14.1.1[Timeuse_burden_total.burden.time >= 7 & Timeuse_burden_total.burden.time < 10 & Timeuse_burden_prop.oncall.time > 1/3 & Timeuse_burden_prop.oncall.time <= 2/3] <- 8
-#   score14.1.1[Timeuse_burden_total.burden.time >= 7 & Timeuse_burden_total.burden.time < 10 & Timeuse_burden_prop.oncall.time > 2/3 & Timeuse_burden_prop.oncall.time <= 1] <- 7
-# 
-#   score14.1.1[Timeuse_burden_total.burden.time >= 10 & Timeuse_burden_total.burden.time < 13 & Timeuse_burden_prop.oncall.time == 0] <- 7
-#   score14.1.1[Timeuse_burden_total.burden.time >= 10 & Timeuse_burden_total.burden.time < 13 & Timeuse_burden_prop.oncall.time > 0 & Timeuse_burden_prop.oncall.time <= 1/3] <- 6
-#   score14.1.1[Timeuse_burden_total.burden.time >= 10 & Timeuse_burden_total.burden.time < 13 & Timeuse_burden_prop.oncall.time > 1/3 & Timeuse_burden_prop.oncall.time <= 2/3] <- 5
-#   score14.1.1[Timeuse_burden_total.burden.time >= 10 & Timeuse_burden_total.burden.time < 13 & Timeuse_burden_prop.oncall.time > 2/3 & Timeuse_burden_prop.oncall.time <= 1] <- 4
-# 
-#   score14.1.1[Timeuse_burden_total.burden.time > 13 & Timeuse_burden_prop.oncall.time == 0] <- 4
-#   score14.1.1[Timeuse_burden_total.burden.time > 13 & Timeuse_burden_prop.oncall.time > 0 & Timeuse_burden_prop.oncall.time <= 1/3] <- 3
-#   score14.1.1[Timeuse_burden_total.burden.time > 13 & Timeuse_burden_prop.oncall.time > 1/3 & Timeuse_burden_prop.oncall.time <= 2/3] <- 2
-#   score14.1.1[Timeuse_burden_total.burden.time > 13 & Timeuse_burden_prop.oncall.time > 2/3 & Timeuse_burden_prop.oncall.time <= 1] <- 1
-# 
-#   #rescale
-#   score14.1.1 = (score14.1.1-1)*4/12
-# 
-#   #--------------------------------------------------------
-#   ## Aggregation
-#   #--------------------------------------------------------
-#   #add labels
-#   var_label(score14.1.1) <- "Time burden and on-call time"
-#   var_label(score14.1) <- "Time burden and on-call time"
-#   var_label(score14) <- "Time use"
-# 
-#   score14.1 = score14.1.1
-#   score14 = score14.1
-#   DepCat14 <- deprive(score14)
-# })
+# cheryl_data$id <- data$Identifier
+
+
+
+## Export to csv ##
+write_csv(data, 'full_dims.csv')
+
+## Save as RDS
+saveRDS(data, 'full_dims.rds')
