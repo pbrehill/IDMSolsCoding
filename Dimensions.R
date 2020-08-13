@@ -1,6 +1,5 @@
 # Solomon islands dimension construction script
 
-# TODO: Midpoint imputation of indicator scores
 # Load packages
 library(tidyverse)
 library(car)
@@ -430,7 +429,7 @@ data$Shelter_security_worry.worried_recoded  <- car::recode(
   data$Shelter_security_worry.worried,
   "2 = 2;
   1 = 1;
-  'yes' = 2;
+  'yes' = 1;
   'Refused to answer' = 1.5;
   97 = 1.5;
   else = NA"
@@ -1065,7 +1064,6 @@ data$DepCat07 <- deprive(data$score7)
 ## Dimension 8 - Relationships
 ### Theme 1 - Dependence and support
 #### Indicator 1 - Dependence and support
-# TODO: Check why there are no nos in can't provide for self N
 ##### It's simpler to add together recoded scores rather than setting a score for every single outcome.
 data$Relationships_dependence_dependence.depend_on_others_recode <- car::recode(
   data$Relationships_dependence_dependence.depend_on_others,
@@ -1226,7 +1224,6 @@ events_menstruation_vars <- c(
     'Clothing_sanitaryproduct_sanitaryproduct.taboo'
 )
 
-# TODO: Is this midpoint estimate right?
 data[(rowSums(data[,c(events_menstruation_vars)] == 97) > 0) &
      !is.na(rowSums(data[,c(events_menstruation_vars)])),
            'Relationships_participation_menstruation'] <- 5.5
@@ -1290,7 +1287,6 @@ data[data$Clothing_basic_ownership.2clothes == 2 &
        !is.na(data$Clothing_basic_ownership.2shoes),
      'Clothing_basic_ownership'] <- 1
 
-# TODO: How do refused to answer responses work?
 ##### Calculate indicator score
 data$score9.1.1 <- norm_IDM(data$Clothing_basic_ownership, 1, 4)
 
@@ -1783,7 +1779,6 @@ data[data$Work_paid_status.past_week == 2 &
 data$score15.1.1 <- norm_IDM(data$Work_paid_status, 1, 4)
 
 
-# TODO: Figure out how to treat NAs in themes 2 and 3.
 #### Indicator 2 - Job security
 ##### We can just sum variable scores for this
 ##### Recode number of jobs
@@ -1922,52 +1917,69 @@ names(data1) <- paste0(names(data1), '_num')
 data <- cbind(data, data1)
 
 ##### Deal with NAs
+
+##### Set hours for those not doing unpaid work to 0
+data[(is.na(data$Work_unpaid)),
+     'Work_unpaid.days_per_wk'] <- 0
+
+data[(is.na(data$Work_unpaid)),
+     'Work_unpaid.hrs_per_day'] <- 0
+
+##### Set hours for those not doing paid work to 0
+##### No paid work
+##### Set hours for those not doing unpaid work to 0
+data[data$Work_paid_security.number_jobs == 1 &
+       !is.na(data$Work_paid_security.number_jobs),
+     'Work_unpaid.days_per_wk'] <- 0
+
+data[data$Work_paid_security.number_jobs == 1 &
+       !is.na(data$Work_paid_security.number_jobs),
+     'Work_unpaid.hrs_per_day'] <- 0
+
 ##### NAs put in in recoding
 ##### Gender means
-mean_narm <- function (x) mean(as.numeric(x), na.rm = TRUE)
-impute_mean_group <- function (x) {
-  # ifelse(is.na(x),
-  #        return(mean_narm(x)),
-  #        return(x))
-  
-  replace(x, is.na(x), mean(x, na.rm=TRUE))
-}
-
-numtime <- data %>%
-  group_by(Gender_ind) %>%
-  select(Work_unpaid.days_per_wk_num, 
-         Work_unpaid.hrs_per_day_num, 
-         Work_paid.days_per_wk_num,
-         Work_paid.hrs_per_day_num) %>%
-  transmute_all(impute_mean_group) %>%
-  ungroup(Gender_ind) %>%
-  select(Work_unpaid.days_per_wk_num, 
-         Work_unpaid.hrs_per_day_num, 
-         Work_paid.days_per_wk_num,
-         Work_paid.hrs_per_day_num)
-
-##### Enumerator NAs
-originalNA <- data %>%
-  select(Work_unpaid.days_per_wk, 
-         Work_unpaid.hrs_per_day, 
-         Work_paid.days_per_wk,
-         Work_paid.hrs_per_day) %>%
-  is.na() %>%
-  as.tibble()
-
-##### Apply these
-numtime$Work_unpaid.days_per_wk_num[originalNA$Work_unpaid.days_per_wk] <- 0
-numtime$Work_paid.days_per_wk_num[originalNA$Work_paid.days_per_wk] <- 0
-numtime$Work_unpaid.hrs_per_day_num[originalNA$Work_unpaid.hrs_per_day] <- 0
-numtime$Work_paid.hrs_per_day_num[originalNA$Work_paid.hrs_per_day] <- 0
-
-
+# mean_narm <- function (x) mean(as.numeric(x), na.rm = TRUE)
+# impute_mean_group <- function (x) {
+#   # ifelse(is.na(x),
+#   #        return(mean_narm(x)),
+#   #        return(x))
+#   
+#   replace(x, is.na(x), mean(x, na.rm=TRUE))
+# }
+# 
+# numtime <- data %>%
+#   group_by(Gender_ind) %>%
+#   select(Work_unpaid.days_per_wk_num, 
+#          Work_unpaid.hrs_per_day_num, 
+#          Work_paid.days_per_wk_num,
+#          Work_paid.hrs_per_day_num) %>%
+#   transmute_all(impute_mean_group) %>%
+#   ungroup(Gender_ind) %>%
+#   select(Work_unpaid.days_per_wk_num, 
+#          Work_unpaid.hrs_per_day_num, 
+#          Work_paid.days_per_wk_num,
+#          Work_paid.hrs_per_day_num)
+# 
+# ##### Enumerator NAs
+# originalNA <- data %>%
+#   select(Work_unpaid.days_per_wk, 
+#          Work_unpaid.hrs_per_day, 
+#          Work_paid.days_per_wk,
+#          Work_paid.hrs_per_day) %>%
+#   is.na() %>%
+#   as.tibble()
+# 
+# ##### Apply these
+# numtime$Work_unpaid.days_per_wk_num[originalNA$Work_unpaid.days_per_wk] <- 0
+# numtime$Work_paid.days_per_wk_num[originalNA$Work_paid.days_per_wk] <- 0
+# numtime$Work_unpaid.hrs_per_day_num[originalNA$Work_unpaid.hrs_per_day] <- 0
+# numtime$Work_paid.hrs_per_day_num[originalNA$Work_paid.hrs_per_day] <- 0
+# 
+# 
 
 ##### Join
 
 ##### Calculate
-# TODO: Figure out an imputation for 15.3
-# TODO: Themes
 data$Work_doubleburden <- numtime %>%
   transmute((Work_paid.hrs_per_day_num * Work_paid.days_per_wk_num) +
               (Work_unpaid.hrs_per_day_num * Work_unpaid.days_per_wk_num)) %>%
